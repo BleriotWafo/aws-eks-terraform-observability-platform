@@ -1,0 +1,27 @@
+{
+  "name": "aws-eks-observability-backend",
+  "version": "1.0.0",
+  "description": "Backend API for AWS EKS Terraform Observability Platform",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "nodejs",
+    "express",
+    "kubernetes",
+    "prometheus",
+    "grafana",
+    "aws",
+    "eks",
+    "terraform"
+  ],
+  "author": "Bleriot Wafo",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.3",
+    "prom-client": "^15.1.3"
+  }
+}
