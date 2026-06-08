@@ -23,6 +23,31 @@ output "name_prefix" {
   value       = local.name_prefix
 }
 
+output "cluster_name" {
+  description = "Future EKS cluster name."
+  value       = local.cluster_name
+}
+
+output "vpc_id" {
+  description = "VPC ID."
+  value       = module.vpc.vpc_id
+}
+
+output "vpc_cidr_block" {
+  description = "VPC CIDR block."
+  value       = module.vpc.vpc_cidr_block
+}
+
+output "public_subnet_ids" {
+  description = "Public subnet IDs."
+  value       = module.vpc.public_subnet_ids
+}
+
+output "public_subnet_cidrs" {
+  description = "Public subnet CIDR blocks."
+  value       = module.vpc.public_subnet_cidrs
+}
+
 output "backend_ecr_repository_name" {
   description = "Backend ECR repository name."
   value       = module.ecr_backend.repository_name
