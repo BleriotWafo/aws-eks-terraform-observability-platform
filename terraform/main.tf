@@ -12,3 +12,9 @@ locals {
     ManagedBy   = "Terraform"
   }
 }
+
+module "ecr_backend" {
+  source = "./modules/ecr"
+
+  repository_name = "${local.name_prefix}-backend"
+}
