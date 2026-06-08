@@ -24,8 +24,23 @@ output "name_prefix" {
 }
 
 output "cluster_name" {
-  description = "Future EKS cluster name."
-  value       = local.cluster_name
+  description = "EKS cluster name."
+  value       = module.eks.cluster_name
+}
+
+output "cluster_endpoint" {
+  description = "EKS cluster endpoint."
+  value       = module.eks.cluster_endpoint
+}
+
+output "cluster_version" {
+  description = "EKS Kubernetes version."
+  value       = module.eks.cluster_version
+}
+
+output "node_group_name" {
+  description = "EKS managed node group name."
+  value       = module.eks.node_group_name
 }
 
 output "vpc_id" {
