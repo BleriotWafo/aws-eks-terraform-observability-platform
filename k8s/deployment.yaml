@@ -17,10 +17,11 @@ spec:
     spec:
       containers:
         - name: backend-api
-          image: aws-eks-observability-backend:local
-          imagePullPolicy: IfNotPresent
+          image: 344596481796.dkr.ecr.eu-central-1.amazonaws.com/eks-observability-platform-dev-backend:v1
+          imagePullPolicy: Always
           ports:
             - containerPort: 4000
+              name: http
           envFrom:
             - configMapRef:
                 name: backend-config
@@ -30,12 +31,16 @@ spec:
               port: 4000
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: 4000
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             requests:
               cpu: "100m"
