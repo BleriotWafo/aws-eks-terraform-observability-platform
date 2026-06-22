@@ -1,0 +1,88 @@
+name: Backend CI/CD to AWS EKS
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "app/backend/**"
+      - "k8s/**"
+      - ".github/workflows/backend-ci-cd.yml"
+
+  workflow_dispatch:
+
+env:
+  AWS_REGION: eu-central-1
+  AWS_ACCOUNT_ID: "344596481796"
+  ECR_REPOSITORY: eks-observability-platform-dev-backend
+  EKS_CLUSTER_NAME: eks-observability-platform-dev-eks
+  K8S_NAMESPACE: eks-observability
+  K8S_DEPLOYMENT: backend-api
+  K8S_CONTAINER: backend-api
+
+jobs:
+  build-push-deploy:
+    name: Build, push and deploy backend
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login \
+            --username AWS \
+            --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE_TAG=${GITHUB_SHA::7}
+          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+          LATEST_IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+          docker build -t $IMAGE_URI -t $LATEST_IMAGE_URI ./app/backend
+          docker push $IMAGE_URI
+          docker push $LATEST_IMAGE_URI
+
+      - name: Configure kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $EKS_CLUSTER_NAME
+
+      - name: Deploy backend to EKS
+        run: |
+          kubectl set image deployment/$K8S_DEPLOYMENT \
+            $K8S_CONTAINER=$IMAGE_URI \
+            -n $K8S_NAMESPACE
+
+          kubectl rollout status deployment/$K8S_DEPLOYMENT -n $K8S_NAMESPACE
+
+      - name: Show backend pods
+        run: |
+          kubectl get pods -n $K8S_NAMESPACE -o wide
