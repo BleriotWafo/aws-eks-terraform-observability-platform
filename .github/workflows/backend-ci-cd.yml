@@ -21,18 +21,51 @@ env:
   K8S_DEPLOYMENT: backend-api
   K8S_CONTAINER: backend-api
 
+concurrency:
+  group: backend-production-deployment
+  cancel-in-progress: false
+
 jobs:
   build-push-deploy:
     name: Build, push and deploy backend
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     permissions:
       contents: read
 
     steps:
+      # ----------------------------------------------------------
+      # 1. Récupération du dépôt
+      # ----------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
+      # ----------------------------------------------------------
+      # 2. Vérification de la présence des secrets AWS
+      # Les valeurs des secrets ne sont jamais affichées.
+      # ----------------------------------------------------------
+      - name: Check AWS secrets availability
+        shell: bash
+        env:
+          ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -z "$ACCESS_KEY" ]; then
+            echo "::error::AWS_ACCESS_KEY_ID is missing from GitHub repository secrets."
+            exit 1
+          fi
+
+          if [ -z "$SECRET_KEY" ]; then
+            echo "::error::AWS_SECRET_ACCESS_KEY is missing from GitHub repository secrets."
+            exit 1
+          fi
+
+          echo "AWS credential secrets are available."
+
+      # ----------------------------------------------------------
+      # 3. Authentification AWS
+      # ----------------------------------------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -41,48 +74,134 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
-        run: aws sts get-caller-identity
+        shell: bash
+        run: |
+          aws sts get-caller-identity
+          echo "AWS authentication succeeded."
 
+      # ----------------------------------------------------------
+      # 4. Installation de kubectl
+      # ----------------------------------------------------------
       - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/kubectl
-          kubectl version --client
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.34.0"
 
+      - name: Verify kubectl installation
+        shell: bash
+        run: kubectl version --client
+
+      # ----------------------------------------------------------
+      # 5. Connexion à Amazon ECR
+      # ----------------------------------------------------------
       - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ----------------------------------------------------------
+      # 6. Préparation du nom et du tag de l’image
+      # ----------------------------------------------------------
+      - name: Prepare Docker image information
+        id: image
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
-          aws ecr get-login-password --region $AWS_REGION | docker login \
-            --username AWS \
-            --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+          IMAGE_TAG="${GITHUB_SHA::7}"
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          LATEST_IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
 
-      - name: Build and push Docker image
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+          echo "latest_image_uri=$LATEST_IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+          echo "Image tag: $IMAGE_TAG"
+          echo "Image URI: $IMAGE_URI"
+
+      # ----------------------------------------------------------
+      # 7. Construction et publication de l’image Docker
+      # ----------------------------------------------------------
+      - name: Build Docker image
+        shell: bash
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+          LATEST_IMAGE_URI: ${{ steps.image.outputs.latest_image_uri }}
         run: |
-          IMAGE_TAG=${GITHUB_SHA::7}
-          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
-          LATEST_IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+          docker build \
+            --pull \
+            --tag "$IMAGE_URI" \
+            --tag "$LATEST_IMAGE_URI" \
+            ./app/backend
 
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+      - name: Push Docker image to Amazon ECR
+        shell: bash
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
+          LATEST_IMAGE_URI: ${{ steps.image.outputs.latest_image_uri }}
+        run: |
+          docker push "$IMAGE_URI"
+          docker push "$LATEST_IMAGE_URI"
 
-          docker build -t $IMAGE_URI -t $LATEST_IMAGE_URI ./app/backend
-          docker push $IMAGE_URI
-          docker push $LATEST_IMAGE_URI
-
-      - name: Configure kubeconfig for EKS
+      # ----------------------------------------------------------
+      # 8. Connexion au cluster Amazon EKS
+      # ----------------------------------------------------------
+      - name: Configure kubeconfig for Amazon EKS
+        shell: bash
         run: |
           aws eks update-kubeconfig \
-            --region $AWS_REGION \
-            --name $EKS_CLUSTER_NAME
+            --region "$AWS_REGION" \
+            --name "$EKS_CLUSTER_NAME"
 
-      - name: Deploy backend to EKS
+      - name: Verify EKS cluster connection
+        shell: bash
         run: |
-          kubectl set image deployment/$K8S_DEPLOYMENT \
-            $K8S_CONTAINER=$IMAGE_URI \
-            -n $K8S_NAMESPACE
+          kubectl cluster-info
+          kubectl get nodes
 
-          kubectl rollout status deployment/$K8S_DEPLOYMENT -n $K8S_NAMESPACE
-
-      - name: Show backend pods
+      # ----------------------------------------------------------
+      # 9. Déploiement de la nouvelle image
+      # ----------------------------------------------------------
+      - name: Deploy backend to Amazon EKS
+        shell: bash
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
         run: |
-          kubectl get pods -n $K8S_NAMESPACE -o wide
+          kubectl set image \
+            "deployment/${K8S_DEPLOYMENT}" \
+            "${K8S_CONTAINER}=${IMAGE_URI}" \
+            --namespace "$K8S_NAMESPACE"
+
+          kubectl rollout status \
+            "deployment/${K8S_DEPLOYMENT}" \
+            --namespace "$K8S_NAMESPACE" \
+            --timeout=300s
+
+      # ----------------------------------------------------------
+      # 10. Vérifications finales
+      # ----------------------------------------------------------
+      - name: Show deployed backend resources
+        shell: bash
+        run: |
+          echo "Deployment:"
+          kubectl get deployment "$K8S_DEPLOYMENT" \
+            --namespace "$K8S_NAMESPACE" \
+            -o wide
+
+          echo "Pods:"
+          kubectl get pods \
+            --namespace "$K8S_NAMESPACE" \
+            -o wide
+
+          echo "Service:"
+          kubectl get service backend-service \
+            --namespace "$K8S_NAMESPACE"
+
+      - name: Show deployed image
+        shell: bash
+        run: |
+          DEPLOYED_IMAGE=$(kubectl get deployment "$K8S_DEPLOYMENT" \
+            --namespace "$K8S_NAMESPACE" \
+            -o jsonpath="{.spec.template.spec.containers[?(@.name=='${K8S_CONTAINER}')].image}")
+
+          echo "Successfully deployed image:"
+          echo "$DEPLOYED_IMAGE"
